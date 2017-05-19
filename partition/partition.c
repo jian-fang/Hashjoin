@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <pthread.h>
+#include <sched.h>
+#include <unistd.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -14,19 +16,81 @@
 #endif
 
 //------------------ Constant Define----------------------//
-#define RELATION_SIZE (1 << 24) 
-#define RAMDOM_DATA		//enable this to use random data
+#ifndef MAX_NUM_CORE_SETTING
+#define MAX_NUM_CORE_SETTING 20
+#endif
+
+#ifndef TUPLE_SIZE
+#define TUPLE_SIZE 16
+#endif
+
+#ifndef R_SIZE
+#define R_SIZE (1 << 24)
+#endif
+
+#ifndef S_SIZE
+#define S_SIZE (1 << 28)
+#endif
+
+// DATASET_TYPE==1 ==> random data
+// DATASET_TYPE==0 ==> unique data
+// DATASET_TYPE==else ==> repeat within 16M
+#ifndef DATASET_TYPE
+#define DATASET_TYPE 0		//enable this to use random data
+#endif
+
+// 1:Power8; other:Intel
+#ifndef MACHINE_TYPE
+#define MACHINE_TYPE 0
+#endif
+
+#if MACHINE_TYPE==1
+#define CACHE_LINE_SIZE 128	//change this to 64(128) for Intel(Power8) machine
+#elif MACHINE_TYPE==0
 #define CACHE_LINE_SIZE 64
-#define ALIGNED_SIZE CACHE_LINE_SIZE
+#else
+#define CACHE_LINE_SIZE 64
+#endif
+
+#ifndef ALIGNED_SIZE
+#define ALIGNED_SIZE 64
+#endif
+
+#ifndef PREFETCH_ON
+#define PREFETCH_ON 1
+#endif
+
+#if PREFETCH_ON==1
+#ifndef PREFETCH_DISTANCE
 #define PREFETCH_DISTANCE 10
-#define RELATION_PADDING 0	// need to set this
-#define PADDING_TUPLES 0		// need to set this
-#define SMALL_PADDING_TUPLES 0		// need to set this
+#endif
+#endif
+
+#ifndef GRANULARITY_TEST
+#define GRANULARITY_TEST 1
+#endif
+
+#define RELATION_PADDING 0 // (PADDING_TUPLES*FANOUT_PASS1*sizeof(tuple_t))	// need to set this
+#define PADDING_TUPLES 0 //(SMALL_PADDING_TUPLES*(FANOUT_PASS2+1))	// need to set this
+#define SMALL_PADDING_TUPLES 0 // (3 * CACHE_LINE_SIZE/sizeof(tuple_t))	// need to set this
+
+#ifndef NUM_RADIX_BITS
 #define NUM_RADIX_BITS 10		// need to set this
+#endif
+
+#ifndef NUM_PASSES
 #define NUM_PASSES 2
+#endif
+
 #define FANOUT_PASS1 (1 << (NUM_RADIX_BITS/NUM_PASSES))
 #define FANOUT_PASS2 (1 << (NUM_RADIX_BITS-(NUM_RADIX_BITS/NUM_PASSES)))
-#define L1_CACHE_SIZE 32768	// need to set this
+
+#if MACHINE_TYPE==1
+#define L1_CACHE_SIZE (1<<16)	// need to set this change to 32768(65536) for 32K(64K)
+#else
+#define L1_CACHE_SIZE (1<<15)
+#endif
+
 #define L1_CACHE_TUPLES (L1_CACHE_SIZE/sizeof(tuple_t))
 #define THRESHOLD1(NTHR) (NTHR*L1_CACHE_TUPLES)
 #define THRESHOLD2(NTHR) (NTHR*NTHR*L1_CACHE_TUPLES)
@@ -88,9 +152,6 @@
 #define MAX(X, Y) (((X) > (Y)) ? (X) : (Y))
 #endif
 
-#ifndef THRESHOLD1
-#define THRESHOLD1(NTHR) (NTHR*L1_CACHE_TUPLES)
-#endif
 //------------------ Type Define----------------------//
 typedef int64_t intkey_t;
 typedef int64_t intvalue_t;
@@ -105,11 +166,35 @@ typedef struct part_t part_t;
 
 typedef intnum_t (*JoinFunction)(const relation_t* const, const relation_t* const, intnum_t);
 
+
 //---------------------- Structure Define ------------------------//
 struct tuple_t
 {
 	intkey_t key;
+
+#if TUPLE_SIZE==16 || TUPLE_SIZE==32 || TUPLE_SIZE==64 || TUPLE_SIZE==128
 	intvalue_t value;
+#if TUPLE_SIZE==32 || TUPLE_SIZE==64 || TUPLE_SIZE==128
+	int64_t value1;
+	int64_t value2;
+#if TUPLE_SIZE==64 || TUPLE_SIZE==128
+	int64_t value3;
+	int64_t value4;
+	int64_t value5;
+	int64_t value6;
+#if TUPLE_SIZE==128
+	int64_t value7;
+	int64_t value8;
+	int64_t value9;
+	int64_t value10;
+	int64_t value11;
+	int64_t value12;
+	int64_t value13;
+	int64_t value14;
+#endif
+#endif
+#endif
+#endif
 };
 
 struct relation_t
@@ -187,12 +272,26 @@ struct part_t {
 } __attribute__((aligned(CACHE_LINE_SIZE)));
 //------------------------ Functions Define -----------------------//
 
+//---------------------- For mapping cpu -------------------------//
+#if MACHINE_TYPE==1
+//static const int mapping[20]={0,8,16,24,32,40,48,56,64,72,80,88,96,104,112,120,128,136,144,152};
+static const int mapping[160]={0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159};
+#else
+static const int mapping[20]={0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19};
+#endif
+
+int get_cpuid(int i)
+{
+	return mapping[i];
+}
+
+
 // allocate memory function
-void * alloc_aligned(size_t size)
+void * alloc_aligned(size_t size, size_t aligned_size)
 {
     void * ret;
     int rv;
-    rv = posix_memalign((void**)&ret, ALIGNED_SIZE, size);
+    rv = posix_memalign((void**)&ret, aligned_size, size);
 
     if (rv) {
         perror("[ERROR] alloc_aligned() failed: out of memory");
@@ -202,7 +301,19 @@ void * alloc_aligned(size_t size)
     return ret;
 };
 
-relation_t * initial_relation(intnum_t num_tuples)
+void shuffle_relation(relation_t* rel)
+{
+	int i;
+	for(i=rel->num_tuples-1;i>0;i--)
+	{
+		intkey_t j = rand()%i;
+		intkey_t tmp = rel->tuples[i].key;
+		rel->tuples[i].key = rel->tuples[j].key;
+		rel->tuples[j].key = tmp;
+	}
+}
+
+relation_t * initial_relation(intnum_t num_tuples,unsigned seed)
 {
 	relation_t * rel = (relation_t*)calloc(1,sizeof(relation_t));
 	if(!rel)
@@ -213,22 +324,56 @@ relation_t * initial_relation(intnum_t num_tuples)
 
 	rel->num_tuples = num_tuples;
 
-	rel->tuples = (tuple_t*) alloc_aligned(rel->num_tuples * sizeof(tuple_t));
-	if (!rel->tuples)
+	rel->tuples = (tuple_t*) alloc_aligned(rel->num_tuples * sizeof(tuple_t),CACHE_LINE_SIZE);
+	if(!rel->tuples)
 	 {
 		perror("out of memory");
 		exit(1);
 	}
 
-	srand((unsigned)time(NULL));
-	for (intnum_t i=0;i<num_tuples;i++)
+	srand(seed);
+//	srand((unsigned)time(NULL));
+
+	for(intnum_t i=0;i<num_tuples;i++)
 	{
-#ifdef RAMDOM_DATA
-		rel->tuples[i].key = i + rand();
+// DATASET_TYPE==1 ==> random data
+// DATASET_TYPE==0 ==> unique data
+// DATASET_TYPE==else ==> repeat within 16M
+#if DATASET_TYPE==1
+		rel->tuples[i].key = rand()%(R_SIZE);
+#elif DATASET_TYPE==0
+		rel->tuples[i].key = i+1;
 #else
-		rel->tuples[i].key = i;
+		rel->tuples[i].key = (i+1)%(R_SIZE);
 #endif
-		rel->tuples[i].value = num_tuples-i;
+	}
+	shuffle_relation(rel);
+
+	for(intnum_t i=0;i<num_tuples;i++)
+	{
+#if TUPLE_SIZE==16 || TUPLE_SIZE==32 || TUPLE_SIZE==64 || TUPLE_SIZE==128
+                rel->tuples[i].value = rel->tuples[i].key;
+#if TUPLE_SIZE==32 || TUPLE_SIZE==64 || TUPLE_SIZE==128
+                rel->tuples[i].value1 = rel->tuples[i].key;
+                rel->tuples[i].value2 = rel->tuples[i].key;
+#if TUPLE_SIZE==64 || TUPLE_SIZE==128
+                rel->tuples[i].value3 = rel->tuples[i].key;
+                rel->tuples[i].value4 = rel->tuples[i].key;
+                rel->tuples[i].value5 = rel->tuples[i].key;
+                rel->tuples[i].value6 = rel->tuples[i].key;
+#if TUPLE_SIZE==128
+                rel->tuples[i].value7 = rel->tuples[i].key;
+                rel->tuples[i].value8 = rel->tuples[i].key;
+                rel->tuples[i].value9 = rel->tuples[i].key;
+                rel->tuples[i].value10 = rel->tuples[i].key;
+                rel->tuples[i].value11 = rel->tuples[i].key;
+                rel->tuples[i].value12 = rel->tuples[i].key;
+                rel->tuples[i].value13 = rel->tuples[i].key;
+                rel->tuples[i].value14 = rel->tuples[i].key;
+#endif
+#endif
+#endif
+#endif
 	}
 
 	printf("Allocate relation done!\tSize:%ld\n",rel->num_tuples);
@@ -295,7 +440,7 @@ inline __attribute__((always_inline)) void task_queue_add(task_queue_t * tq, tas
   tq->count ++;
 }
 
-inline __attribute__((always_inline)) task_t* task_queue_get_atomic(task_queue_t * tq) 
+inline __attribute__((always_inline)) task_t* task_queue_get_atomic(task_queue_t * tq)
 {
     pthread_mutex_lock(&tq->lock);
     task_t * ret = 0;
@@ -318,7 +463,7 @@ inline __attribute__((always_inline)) task_t* task_queue_get_slot_atomic(task_qu
     return ret;
 }
 
-inline __attribute__((always_inline)) void task_queue_add_atomic(task_queue_t * tq, task_t * t) 
+inline __attribute__((always_inline)) void task_queue_add_atomic(task_queue_t * tq, task_t * t)
 {
     pthread_mutex_lock(&tq->lock);
     t->next  = tq->head;
@@ -363,6 +508,9 @@ intnum_t bucket_chaining_join(const relation_t* const R, const relation_t* const
 		}
 	}
 
+	free(bucket);
+	free(next);
+
 	return results;
 }
 
@@ -397,7 +545,7 @@ void parallel_radix_partition(part_t * const part)
 		uint32_t idx = HASH(rel[i].key, MASK, R);
 		my_hist[idx] ++;
 	}
-
+	
 	/* compute local prefix sum on hist */
 	for(i = 0; i < fanOut; i++)
 	{
@@ -407,14 +555,13 @@ void parallel_radix_partition(part_t * const part)
 
 	/* wait at a barrier until each thread complete histograms */
 	BARRIER_ARRIVE(part->thrargs->barrier, rv);
-	
+
 	/* determine the start and end of each cluster */
 	for(i = 0; i < my_tid; i++)
 	{
 		for(j = 0; j < fanOut; j++)
 			output[j] += hist[i][j];
 	}
-
 	for(i = my_tid; i < nthreads; i++)
 	{
 		for(j = 1; j < fanOut; j++)
@@ -444,11 +591,11 @@ void parallel_radix_partition_optimized(part_t * const part)
 	// TODO: optimized
 }
 
-void 
-radix_cluster(relation_t * restrict outRel, 
+void
+radix_cluster(relation_t * restrict outRel,
               relation_t * restrict inRel,
-              int32_t * restrict hist, 
-              int R, 
+              int32_t * restrict hist,
+              int R,
               int D)
 {
     uint32_t i;
@@ -457,7 +604,7 @@ radix_cluster(relation_t * restrict outRel,
     uint32_t fanOut = 1 << D;
 
     /* the following are fixed size when D is same for all the passes,
-       and can be re-used from call to call. Allocating in this function 
+       and can be re-used from call to call. Allocating in this function
        just in case D differs from call to call. */
     uint32_t dst[fanOut];
 
@@ -507,22 +654,22 @@ void serial_radix_partition(task_t * const task, task_queue_t * join_queue, cons
 		{
 			task_t * t = task_queue_get_slot_atomic(join_queue);
 			t->relR.num_tuples = outputR[i];
-			t->relR.tuples = task->tmpR.tuples + offsetR 
+			t->relR.tuples = task->tmpR.tuples + offsetR
 				     + i * SMALL_PADDING_TUPLES;
-			t->tmpR.tuples = task->relR.tuples + offsetR 
+			t->tmpR.tuples = task->relR.tuples + offsetR
 				     + i * SMALL_PADDING_TUPLES;
 			offsetR += outputR[i];
 
 			t->relS.num_tuples = outputS[i];
-			t->relS.tuples = task->tmpS.tuples + offsetS 
+			t->relS.tuples = task->tmpS.tuples + offsetS
 				     + i * SMALL_PADDING_TUPLES;
-			t->tmpS.tuples = task->relS.tuples + offsetS 
+			t->tmpS.tuples = task->relS.tuples + offsetS
 				     + i * SMALL_PADDING_TUPLES;
 			offsetS += outputS[i];
 
 			/* task_queue_copy_atomic(join_queue, &t); */
 			task_queue_add_atomic(join_queue, t);
-		} 
+		}
 		else
 		{
 			offsetR += outputR[i];
@@ -536,6 +683,8 @@ void serial_radix_partition(task_t * const task, task_queue_t * join_queue, cons
 // This is the thread function
 void* prj_thread(void* param)
 {
+	struct timeval time_1, time_2, time_3;
+	struct timeval start_time, end_time;
 	arg_t * args   = (arg_t*) param;
 	int32_t my_tid = args->my_tid;
 
@@ -569,6 +718,16 @@ void* prj_thread(void* param)
 
 	// barrier: wait for all threads start
 	BARRIER_ARRIVE(args->barrier, rv);
+
+#ifdef TIME_OF_PHASE
+	//Timing information
+	if(my_tid == 0)
+        {
+                // timing information
+                gettimeofday(&time_1,NULL);
+        	gettimeofday(&start_time,NULL);
+        }
+#endif
 
 	//-------------------- 1st pass partitioning ---------------------------//
 	part.R       = 0;
@@ -608,8 +767,16 @@ void* prj_thread(void* param)
 
 
   /* wait at a barrier until each thread copies out */
-  BARRIER_ARRIVE(args->barrier, rv);
+	BARRIER_ARRIVE(args->barrier, rv);
 
+#ifdef TIME_OF_PHASE
+	if(my_tid == 0)
+        {
+                // timing information
+                gettimeofday(&time_2,NULL);
+		printf("1st Partition Phase for %ld microsec\n",(time_2.tv_sec-time_1.tv_sec)*1000000L+time_2.tv_usec-time_1.tv_usec);
+        }
+#endif
   //------------------- end of 1st partitioning phase ---------------------//
 
 	// 3. first thread creates partitioning tasks for 2nd pass
@@ -635,10 +802,10 @@ void* prj_thread(void* param)
 			}
 		}
 	}
-	
+
 	// barrier wait for adding all partitioning tasks */
 	BARRIER_ARRIVE(args->barrier, rv);
-	
+
 	//----------------- 2nd pass  partitioning --------------------//
 	//4. 2nd partitioning and add join task queue
 
@@ -648,34 +815,65 @@ void* prj_thread(void* param)
 	join_queue = part_queue;
 	// part_queue is used as a temporary queue for handling skewed parts
 	part_queue = swap;
-    
+
 #elif NUM_PASSES==2
+#ifdef TIME_OF_PHASE
+	if(my_tid == 0)
+        {
+                gettimeofday(&time_1,NULL);
+	}
+#endif
 	while((task = task_queue_get_atomic(part_queue)))
 	{
 		serial_radix_partition(task, join_queue, R, D);
 	}
 
+	// barrier for all threads finish the 2nd round partition
+	BARRIER_ARRIVE(args->barrier, rv);
+#ifdef TIME_OF_PHASE
+	if(my_tid == 0)
+        {
+                gettimeofday(&time_2,NULL);
+                printf("2nd Partition Phase for %ld microsec\n",(time_2.tv_sec-time_1.tv_sec)*1000000L+time_2.tv_usec-time_1.tv_usec);
+	}
+#endif
 #else
 #warning Only 2-pass partitioning is implemented, set NUM_PASSES to 2!
 #endif
 
 	free(outputR);
 	free(outputS);
-	
+
 	// wait at a barrier until all threads add all join tasks
+#ifdef TIME_OF_PHASE
 	BARRIER_ARRIVE(args->barrier, rv);
-	
+	if(my_tid == 0)
+        {
+                gettimeofday(&time_1,NULL);
+	}
+#endif
 	while((task = task_queue_get_atomic(join_queue)))
 	{
         	/* do the actual join. join method differs for different algorithms,
         	i.e. bucket chaining, histogram-based, histogram-based with simd &
         	prefetching  */
 		results += args->join_function(&task->relR, &task->relS, NUM_RADIX_BITS);
-                
+
         	args->parts_processed ++;
 	}
 
 	args->result = results; // get the result
+#ifdef TIME_OF_PHASE
+	BARRIER_ARRIVE(args->barrier, rv);
+
+	if(my_tid == 0)
+	{
+                gettimeofday(&time_2,NULL);
+                printf("Build_Probe Phase for %ld microsec\n",(time_2.tv_sec-time_1.tv_sec)*1000000L+time_2.tv_usec-time_1.tv_usec);
+		gettimeofday(&end_time,NULL);
+        	printf("The algorithm runs for %ld microsec\n",(end_time.tv_sec-start_time.tv_sec)*1000000L+end_time.tv_usec-start_time.tv_usec);
+	}
+#endif
 }
 
 intnum_t join_init_run(relation_t* relR, relation_t* relS, JoinFunction jf, int nthreads)
@@ -686,6 +884,7 @@ intnum_t join_init_run(relation_t* relR, relation_t* relS, JoinFunction jf, int 
 	int i, rv;
 	pthread_t tid[nthreads];
 	pthread_attr_t attr;
+	cpu_set_t set;
 	pthread_barrier_t barrier;
 	arg_t args[nthreads];
 
@@ -699,14 +898,14 @@ intnum_t join_init_run(relation_t* relR, relation_t* relS, JoinFunction jf, int 
 	join_queue = task_queue_init((1<<NUM_RADIX_BITS));
 
 	// allocate temporary space for partitioning
-	tmpRelR = (tuple_t*) alloc_aligned(relR->num_tuples * sizeof(tuple_t) + RELATION_PADDING);
-	tmpRelS = (tuple_t*) alloc_aligned(relS->num_tuples * sizeof(tuple_t) + RELATION_PADDING);
+	tmpRelR = (tuple_t*) alloc_aligned(relR->num_tuples * sizeof(tuple_t) + RELATION_PADDING, CACHE_LINE_SIZE);
+	tmpRelS = (tuple_t*) alloc_aligned(relS->num_tuples * sizeof(tuple_t) + RELATION_PADDING, CACHE_LINE_SIZE);
 
 	MALLOC_CHECK((tmpRelR && tmpRelS));
 
 	/* allocate histograms arrays, actual allocation is local to threads */
-	histR = (int32_t**) alloc_aligned(nthreads * sizeof(int32_t*));
-	histS = (int32_t**) alloc_aligned(nthreads * sizeof(int32_t*));
+	histR = (int32_t**) alloc_aligned(nthreads * sizeof(int32_t*), CACHE_LINE_SIZE);
+	histS = (int32_t**) alloc_aligned(nthreads * sizeof(int32_t*), CACHE_LINE_SIZE);
 	MALLOC_CHECK((histR && histS));
 
 	rv = pthread_barrier_init(&barrier, NULL, nthreads);
@@ -722,48 +921,57 @@ intnum_t join_init_run(relation_t* relR, relation_t* relS, JoinFunction jf, int 
 	numperthr[0] = relR->num_tuples / nthreads;
 	numperthr[1] = relS->num_tuples / nthreads;
 
+	// get cpu number of a machine
+	int num_cpus = sysconf( _SC_NPROCESSORS_ONLN );
+
 	for(i = 0; i < nthreads; i++)
 	{
-			args[i].relR = relR->tuples + i * numperthr[0];
-			args[i].tmpR = tmpRelR;
-			args[i].histR = histR;
+	//	int cpu_idx = get_cpuid(i%MAX_NUM_CORE_SETTING);
+		int cpu_idx = get_cpuid(i%num_cpus);
+		CPU_ZERO(&set);
+		CPU_SET(cpu_idx,&set);
+		pthread_attr_setaffinity_np(&attr,sizeof(cpu_set_t),&set);
 
-			args[i].relS = relS->tuples + i * numperthr[1];
-			args[i].tmpS = tmpRelS;
-			args[i].histS = histS;
+		args[i].relR = relR->tuples + i * numperthr[0];
+		args[i].tmpR = tmpRelR;
+		args[i].histR = histR;
 
-			args[i].numR = (i == (nthreads-1)) ?
-					(relR->num_tuples - i * numperthr[0]) : numperthr[0];
-			args[i].numS = (i == (nthreads-1)) ?
-					(relS->num_tuples - i * numperthr[1]) : numperthr[1];
-			args[i].totalR = relR->num_tuples;
-			args[i].totalS = relS->num_tuples;
+		args[i].relS = relS->tuples + i * numperthr[1];
+		args[i].tmpS = tmpRelS;
+		args[i].histS = histS;
 
-			args[i].my_tid = i;
-			args[i].part_queue = part_queue;
-			args[i].join_queue = join_queue;
+		args[i].numR = (i == (nthreads-1)) ?
+				(relR->num_tuples - i * numperthr[0]) : numperthr[0];
+		args[i].numS = (i == (nthreads-1)) ?
+				(relS->num_tuples - i * numperthr[1]) : numperthr[1];
+		args[i].totalR = relR->num_tuples;
+		args[i].totalS = relS->num_tuples;
 
-			args[i].barrier = &barrier;
-			args[i].join_function = jf;
-			args[i].nthreads = nthreads;
+		args[i].my_tid = i;
+		args[i].part_queue = part_queue;
+		args[i].join_queue = join_queue;
 
-			rv = pthread_create(&tid[i], &attr, prj_thread, (void*)&args[i]);
-			if (rv){
-					printf("[ERROR] return code from pthread_create() is %d\n", rv);
-					exit(-1);
-			}
+		args[i].barrier = &barrier;
+		args[i].join_function = jf;
+		args[i].nthreads = nthreads;
+
+		rv = pthread_create(&tid[i], &attr, prj_thread, (void*)&args[i]);
+		if (rv){
+			printf("[ERROR] return code from pthread_create() is %d\n", rv);
+			exit(-1);
+		}
 	}
 
 	// Join all the threads and count the final result
 	for(i = 0; i < nthreads; i++){
-			pthread_join(tid[i], NULL);
-			results += args[i].result;
+		pthread_join(tid[i], NULL);
+		results += args[i].result;
 	}
 
 	// free the space
 	for(i = 0; i < nthreads; i++) {
-			free(histR[i]);
-			free(histS[i]);
+		free(histR[i]);
+		free(histS[i]);
 	}
 	free(histR);
 	free(histS);
@@ -794,12 +1002,23 @@ int main(int argc, char* argv[])
 	}
 	else
 	{
-		const intnum_t num_tuples = RELATION_SIZE;
+		// start from CPU 0
+		cpu_set_t startset;
+		CPU_ZERO(&startset);
+		CPU_SET(0, &startset);
+		if(sched_setaffinity(0, sizeof(startset), &startset) <0)
+		{
+			perror("sched_setaffinity\n");
+		}
+
+		const intnum_t num_R = R_SIZE;
+		const intnum_t num_S = S_SIZE;
+
 		const int nthreads = atoi(argv[1]);
 		struct timeval start_time, end_time;
 
-		relation_t * relR = initial_relation(num_tuples);
-		relation_t * relS = initial_relation(num_tuples*16);
+		relation_t * relR = initial_relation(num_R,12345);
+		relation_t * relS = initial_relation(num_S,12345);
 
 		// Timing information
 		gettimeofday(&start_time,NULL);
@@ -808,6 +1027,7 @@ int main(int argc, char* argv[])
 		intnum_t num_results = partition_hash_join(relR,relS,nthreads);
 
 		// Timing information
+
 		gettimeofday(&end_time,NULL);
 
 		printf("%ld matched found!\n",num_results);
