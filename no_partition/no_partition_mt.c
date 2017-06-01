@@ -192,6 +192,15 @@ struct arg_t
 };
 
 // ------------------------------------- Functions ----------------------------------//
+int mapping[40]={0,1,2,3,4,5,6,7,8,9,20,21,22,23,24,25,26,27,28,29};
+// Function:		get_cpuid
+// Functionality:	get the mapping cpuid
+// Input:		thread number i
+// Output:		cpu id
+int get_cpuid(int i)
+{
+	return mapping[i];
+}
 
 // Function: 		alloc_aligned
 // Functionality:	allocate new space
@@ -395,6 +404,16 @@ void build_hashtable(relation_t* rel,hashtable_t* ht,bucket_buffer_t** overflowb
 		{
 			intnum_t prefetch_bucket_index = HASH(rel->tuples[prefetch_index++].key,mask);
 			__builtin_prefetch(ht->buckets + prefetch_bucket_index, 1, 1); // prefetch for write
+#if GRANULARITY_TEST==1
+
+#if TUPLE_SIZE==128
+                        __builtin_prefetch(&(((bucket_t*)(ht->buckets + prefetch_bucket_index))->tuples[0].value7), 1, 1);
+#endif
+#if TUPLE_SIZE==32 || TUPLE_SIZE==64 || TUPLE_SIZE==128
+                        __builtin_prefetch(&(((bucket_t*)(ht->buckets + prefetch_bucket_index))->next), 1, 1);
+#endif
+
+#endif
 		}
 #endif
 		intnum_t index = HASH(rel->tuples[i].key,mask);
@@ -438,6 +457,7 @@ void build_hashtable(relation_t* rel,hashtable_t* ht,bucket_buffer_t** overflowb
 // Output:		void
 intnum_t probe_hashtable(relation_t* rel,hashtable_t* ht)
 {
+
 	intnum_t num_results = 0;
 #if PREFETCH_ON==1
 	intnum_t prefetch_index = PREFETCH_DISTANCE;
@@ -453,8 +473,8 @@ intnum_t probe_hashtable(relation_t* rel,hashtable_t* ht)
 			__builtin_prefetch(ht->buckets + prefetch_bucket_index, 0, 1);
 #if GRANULARITY_TEST==1
 
-#if TUPLE_SZIE==128
-			__builtin_prefetch(&(((bucket_t*)(ht->buckets + prefetch_bucket_index))->tuples[7]), 0, 1);
+#if TUPLE_SIZE==128
+			__builtin_prefetch(&(((bucket_t*)(ht->buckets + prefetch_bucket_index))->tuples[0].value7), 0, 1);
 #endif
 #if TUPLE_SIZE==32 || TUPLE_SIZE==64 || TUPLE_SIZE==128
 			__builtin_prefetch(&(((bucket_t*)(ht->buckets + prefetch_bucket_index))->next), 0, 1);
@@ -678,8 +698,8 @@ int main(int argc, char* argv[])
 		// Build and probe the hash table in threads
 		for(int i=0;i<nthreads;i++)
 		{
-		//	int cpu_idx = get_cpuid(i%MAX_NUM_THREAD);
-			int cpu_idx = i%num_cpus;
+			int cpu_idx = get_cpuid(i%num_cpus);
+		//	int cpu_idx = i%num_cpus;
 			CPU_ZERO(&set);
 			CPU_SET(cpu_idx,&set);
 			pthread_attr_setaffinity_np(&attr,sizeof(cpu_set_t),&set);
