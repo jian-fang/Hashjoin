@@ -4,4 +4,7 @@ This project is modified from the project "Parallel Joins on Multi-Core" by Cagr
 
 This project aims to explore the the law of how hash-jion works in modern processors, and give a guide for designnig a CPU+FPGA system to accerlerate the hash-join algorithms. This project can support large dataset (target on TB level), various tuple size
 
-This project has not been done yet!
+This project can be run on Intel and Power architecture. You can also change the tuple size which is indicated as a `granularity factor` that will change the winner between the `no-partitioning hash join` and the `partitioning hash joni`.
+
+You can find our ADMS@VLDB paper `Analyzing In-Memory Hash Join: Granularity Matters` via http://www.adms-conf.org/
+
